@@ -1,3 +1,47 @@
 #!/bin/bash
 
-echo "hello, fox"
+SELF_PATH=
+function get_abs_path() {
+    readlink -f $1 
+}
+
+function panic() {
+    >&2 echo "$@"
+    exit 1 
+}
+
+function version() {
+    echo "fox version 0.0.1"
+}
+
+function help() {
+    echo "usage: fox <command> [args]"     
+    local cmds_dir=${SELF_PATH}/cmds
+    [[ -d ${cmds_dir} ]] || panic "error: cmds removed!"
+
+    local cmd_lists=$(find ${cmds_dir} -type f)
+    echo "The complete list of recognized commands are:"
+    for c in ${cmd_lists[*]}; do
+        echo $(basename ${c})
+    done
+}
+
+function badsubcommd() {
+    >&2 echo "fox: $1 is not a fox command. See 'fox help'."
+    return 1
+}
+
+SELF_PATH=$(dirname $(get_abs_path $(which $0)))
+action=$1
+shift 1
+case $action in
+    version)
+        version
+        ;;
+    help)
+        help
+        ;;
+    *)
+        badsubcommd
+        ;;
+esac

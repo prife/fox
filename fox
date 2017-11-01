@@ -27,11 +27,20 @@ function help() {
 }
 
 function badsubcommd() {
-    >&2 echo "fox: $1 is not a fox command. See 'fox help'."
-    return 1
+    >&2 echo "fox: '$1' is not a fox command. See 'fox help'."
+    exit 1
+}
+
+function execute() {
+    local action=$1
+    [[ x"$action" == x ]] && help && exit 1
+    [[ -f ${CMDS_PATH}/$action ]] || badsubcommd $action
+    shift 1
+    ${CMDS_PATH}/${action} "$@"
 }
 
 SELF_PATH=$(dirname $(get_abs_path $(which $0)))
+CMDS_PATH=${SELF_PATH}/cmds
 action=$1
 shift 1
 case $action in
@@ -42,6 +51,6 @@ case $action in
         help
         ;;
     *)
-        badsubcommd
+        execute $action "$@"
         ;;
 esac

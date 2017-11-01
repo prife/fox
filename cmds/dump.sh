@@ -1,0 +1,3 @@
+sed -n 's/[\t ]*public static final String \([^ ]*\) = "\(android.intent.[^"]*\)";/"\2":Intent.\1/p' /Users/prife/Library/Android/sdk/sources/android-25/android/content/Intent.java > 1.txt
+
+sed -n 's/ *public static final int \(FLAG_[^ ]*\) *= *\(0[xX][^;]*\);/\2:Window.Layout.Params.\1/p' /Users/prife/Library/Android/sdk/sources/android-25/android/view/WindowManager.java > window_lp_flag.txt

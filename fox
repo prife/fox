@@ -22,7 +22,9 @@ function help() {
     local cmd_lists=$(find ${cmds_dir} -type f)
     echo "The complete list of recognized commands are:"
     for c in ${cmd_lists[*]}; do
-        echo $(basename ${c})
+        if [ -x $c ]; then
+            echo $(basename ${c})
+        fi
     done
 }
 
@@ -33,7 +35,11 @@ function badsubcommd() {
 
 function execute() {
     local action=$1
-    [[ x"$action" == x ]] && help && exit 1
+    if [[ x"$action" == x ]]; then
+        help
+        exit 1
+    fi
+
     [[ -f ${CMDS_PATH}/$action ]] || badsubcommd $action
     shift 1
     ${CMDS_PATH}/${action} "$@"

@@ -22,10 +22,10 @@ INTENT_FLAG_TXT = PREIFX+"/intent_flag.txt"
 VISIBILITY_FLAG_TXT = PREIFX+"/visibility_flag.txt"
 WINDOW_LP_FLAG_TXT = PREIFX+"/window_lp_flag.txt"
 
-intent_map={}
-intent_flag_map={}
-visibility_flag_map={}
-window_lp_flag_map={}
+intent_map = {}
+intent_flag_map = {}
+visibility_flag_map = {}
+window_lp_flag_map = {}
 
 def load_intent_maps():
     with open(PREIFX+"/intent.txt") as f:

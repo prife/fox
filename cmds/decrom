@@ -35,7 +35,8 @@ function oat2dex() {
 
 function get_classesdex_in_oat() {
     local oat=$1
-    dextra -l ${oat} 2> /dev/null | sed -n "s/Dex header.*.jar:\(classes.*.dex\)/\1/p"
+    #dextra -l ${oat} 2> /dev/null | sed -n "s/Dex header.*.jar:\(classes.*.dex\)/\1/p"
+    dextra -l ${oat} 2> /dev/null | sed -n "s/Dex header.*:\(classes.*.dex\)/\1/p"
 }
 
 function check_has_multidex() {
@@ -104,12 +105,19 @@ function decompile_app() {
             subdir=arm
         fi
     fi
-    HERE=$(pwd)
-    cd ${app_dir}
-    oat2dex oat/${subdir}/*.odex classes.dex
+    local file=$(find ${app_dir}/oat/${subdir} -name "*.odex")
+    oat2dex ${file} classes.dex
+    cp ${app_dir}/${app_name}.apk ./
     jar -uvf ${app_name}.apk classes.dex
-    cd $HERE
-    jadx -e --show-bad-code ${app_dir}/${app_name}.apk
+    local lists_more=($(get_classesdex_in_oat ${file}))
+    for more in ${lists_more[*]}
+    do
+        echo $more
+        oat2dex ${file}/${more} ${more}
+        jar -uvf ${app_name}.apk ${more}
+    done
+    jadx -e --show-bad-code ${app_name}.apk
+    mv ${app_name}.apk *.dex  ${app_name}
 }
 
 action=$1

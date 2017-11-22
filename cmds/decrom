@@ -2,6 +2,8 @@
 
 DEXTRA=dextra
 JADX=jadx
+#{normal, fallback}
+JADX_MODE=normal
 AOSP_FRAMWROKDIR=
 
 function get_abs_path() {
@@ -49,6 +51,17 @@ function check_has_multidex() {
     done
 }
 
+function jadx_wrapper() {
+    case $JADX_MODE in
+        normal)
+            $JADX --show-bad-code "$@"
+            ;;
+        fallback)
+            $JADX -f "$@"
+            ;;
+    esac
+}
+
 function extract_dex_from_frameworks() {
     local oatdir=$(get_abs_path $1)
     local suffix=$2
@@ -61,14 +74,14 @@ function extract_dex_from_frameworks() {
         local package=$(basename ${tmp%.*})
         oat2dex ${file} ${package}.dex
         echo "jadx: $dex -> to java"
-        $JADX --show-bad-code ${package}.dex
+        jadx_wrapper ${package}.dex
 
         local lists_more=($(get_classesdex_in_oat ${file}))
         for more in ${lists_more[*]}
         do
             oat2dex ${file}/${more} ${package}-${more}
             echo "jadx: $dex -> to java"
-            $JADX --show-bad-code ${package}-${more} -d ${package}
+            jadx_wrapper ${package}-${more} -d ${package}
         done
     done
 }
@@ -79,7 +92,7 @@ function extract_dex_from_frameworks_jars() {
     for file in ${lists[*]}
     do
         echo "jadx: $file -> to java"
-        $JADX --show-bad-code ${file}
+        jadx_wrapper ${file}
     done
 }
 
@@ -99,7 +112,7 @@ function decompile_app() {
     local subdir=arm64
     if [ ! -f ${app_dir}/oat/arm64/${app_name}.odex ]; then
         if [ ! -f ${app_dir}/oat/arm/${app_name}.odex ]; then
-           jadx -e --show-bad-code ${app_dir}/${app_name}.apk
+           jadx_wrapper -e ${app_dir}/${app_name}.apk
            return
         else
             subdir=arm
@@ -116,7 +129,7 @@ function decompile_app() {
         oat2dex ${file}/${more} ${more}
         jar -uvf ${app_name}.apk ${more}
     done
-    jadx -e --show-bad-code ${app_name}.apk
+    jadx_wrapper -e ${app_name}.apk
     mv ${app_name}.apk *.dex  ${app_name}
 }
 
@@ -130,7 +143,17 @@ case $action in
         AOSP_FRAMWROKDIR=$(get_abs_path $1/framework/arm64)
         decompile_framework "$@"
         ;;
+    all-fallback)
+        JADX_MODE=fallback
+        AOSP_FRAMWROKDIR=$(get_abs_path $1/framework/arm64)
+        decompile_framework "$@"
+        ;;
     app)
+        AOSP_FRAMWROKDIR=$(get_abs_path $1/framework/arm64)
+        decompile_app $2
+        ;;
+    app-fallback)
+        JADX_MODE=fallback
         AOSP_FRAMWROKDIR=$(get_abs_path $1/framework/arm64)
         decompile_app $2
         ;;

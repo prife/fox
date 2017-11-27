@@ -10,6 +10,11 @@ function panic() {
     exit 1 
 }
 
+function install() {
+    mkdir -p ~/bin/
+    ${SELF_PATH}/extras/install
+}
+
 function version() {
     echo "fox version 0.0.1"
 }
@@ -20,7 +25,11 @@ function help() {
     [[ -d ${cmds_dir} ]] || panic "error: cmds removed!"
 
     local cmd_lists=$(find ${cmds_dir} -type f)
+    echo
     echo "The complete list of recognized commands are:"
+    echo
+    echo "version: show version"
+    echo "install: install necessory tools"
     for c in ${cmd_lists[*]}; do
         if [ -x $c ]; then
             echo $(basename ${c})
@@ -55,6 +64,9 @@ case $action in
         ;;
     help)
         help
+        ;;
+    install)
+        install        
         ;;
     *)
         execute $action "$@"

@@ -1,0 +1,23 @@
+#!/bin/bash
+
+function get_abs_path() {
+    readlink -f $1 
+}
+
+SELF_PATH=$(dirname $(get_abs_path $(which $0)))
+
+cd ~/bin
+ln -fs $SELF_PATH/extras/apktool
+ln -fs $SELF_PATH/extras/baksmali
+ln -fs $SELF_PATH/extras/smali
+ln -fs $SELF_PATH/extras/jadx-0.6.1/bin/jadx
+ln -fs $SELF_PATH/extras/jadx-0.6.1/bin/jadx-gui
+
+case $(uname -s) in
+    Linux)
+        ln -fs $SELF_PATH/extras/dextra.ELF64 dextra
+        ;;
+    Darwin)
+        ln -fs $SELF_PATH/extras/dextra dextra
+        ;;
+esac

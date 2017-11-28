@@ -2,9 +2,12 @@
 
 SDK=/Users/prife/Library/Android/sdk/sources/android-25
 
+function get_abs_path() {
+    readlink -f $1
+}
+
 function dump_intent_flag() {
-    sed -n 's/[ ]*public static final int \(FLAG_[^ ]*\) = \(0[xX][^;]*\);/\2:Intent.\1/p' ${SDK}/android/content/Intent.java
- > intent_flag.txt
+    sed -n 's/[ ]*public static final int \(FLAG_[^ ]*\) = \(0[xX][^;]*\);/\2:Intent.\1/p' ${SDK}/android/content/Intent.java > intent_flag.txt
 }
 
 function dump_context_service() {
@@ -16,14 +19,19 @@ function dump_intent_action() {
 }
 
 function dump_window_lp_flag() {
-    sed -n 's/ *public static final int \(FLAG_[^ ]*\) *= *\(0[xX][^;]*\);/\2:Window.Layout.Params.\1/p' ${SDK}/android/view/WindowManager.java > window_lp_flag.txt
+    sed -n 's/ *public static final int \(FLAG_[^ ]*\) *= *\(0[xX][^;]*\);/\2:WindowManager.LayoutParams.\1/p' ${SDK}/android/view/WindowManager.java > window_lp_flag.txt
 }
 
 #-- main --
-if [[ x"$1" == x -a -d "$1" ]]; then
-    SDK=$1
-    echo "warning, SDK path is not valid, use $SDK!"
+if [ x"$1" == x -o ! -d "$1" -o ! -f "$1"/android/content/Intent.java ]; then
+    echo "warning, SDK path [$SDK] is not valid!"
+    exit 1
 fi
+
+SDK=$1
+
+SELF_PATH=$(dirname $(get_abs_path $(which $0)))
+cd $SELF_PATH
 
 dump_intent_flag
 dump_intent_action

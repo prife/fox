@@ -44,8 +44,8 @@ def init(name):
     resource_maps["visibility_flag"] = os.path.join(PREIFX, "visibility_flag.txt")
     resource_maps["window_lp_flag"] = os.path.join(PREIFX, "window_lp_flag.txt")
 
-def load_string():
-    with open(flag_file, out_map) as f:
+def load_string(flag_file, out_map):
+    with open(flag_file) as f:
         for line in f:
             line_kv = line.split(":")
             out_map[line_kv[0]] = line_kv[1][:-1]
@@ -82,8 +82,9 @@ def decimal2hex(number):
 
 def replace_flags(text, pattern, cust_map, mode="map", type="method"):
     def dashrepl(matchobj):
-        origin = matchobj.group(0)
-        flag = int(matchobj.group(1), 0)
+        origin_str = matchobj.group(0)
+        flag_str = matchobj.group(1)
+        flag = int(flag_str, 0)
 
         if mode == "table":
             flag_gen = gen_string_from_flag_table(flag, cust_map)
@@ -91,12 +92,7 @@ def replace_flags(text, pattern, cust_map, mode="map", type="method"):
             flag_gen = gen_string_from_flag_map(flag, cust_map)
 
         print("%s --> %s" %(flag, flag_gen))
-
-        #if type == "method":
-        #    return r".%s(%s)" %(pattern, flag_gen)
-        #else:
-        #    return r".%s(%s)" %(pattern, flag_gen)
-        return origin.sub(flag, flag_gen)
+        return re.sub(flag_str, flag_gen, origin_str)
 
     p_pattern = None
     if type == "method":
@@ -108,7 +104,7 @@ def replace_flags(text, pattern, cust_map, mode="map", type="method"):
 
     return re.sub(p_pattern, dashrepl, text)
 
-def replace(fsrc):
+def all(fsrc):
     with open(fsrc, 'rb+') as fd:
         s = fd.read()
 
@@ -136,7 +132,7 @@ def replace(fsrc):
 def replace_files(file_lists):
     for i in file_lists:
         print("--> replace %s" %i)
-        replace(i)
+        all(i)
 
 def replace(str1, str2, fsrc):
     with open(fsrc, "rb+") as f:

@@ -3,6 +3,7 @@
 # encoding: UTF-8
 import sys
 import re
+import os
 
 services={
         "fingerprint":"FINGERPRINT_SERVICE",
@@ -17,18 +18,38 @@ services={
         "telecom": "TELECOM_SERVICE",
         }
 
-PREIFX = "/Users/prife/tools/fox/cmds"
-INTENT_FLAG_TXT = PREIFX+"/intent_flag.txt"
-VISIBILITY_FLAG_TXT = PREIFX+"/visibility_flag.txt"
-WINDOW_LP_FLAG_TXT = PREIFX+"/window_lp_flag.txt"
+PREIFX = ""
+INTETN_ACTION_TXT = ""
+INTENT_FLAG_TXT = ""
+VISIBILITY_FLAG_TXT = ""
+WINDOW_LP_FLAG_TXT = ""
 
 intent_map = {}
 intent_flag_map = {}
 visibility_flag_map = {}
 window_lp_flag_map = {}
 
+def which(file):
+    for path in os.environ["PATH"].split(os.pathsep):
+        if os.path.exists(os.path.join(path, file)):
+            return os.path.join(path, file)
+    return None
+
+def init(name):
+    abspath = os.path.abspath(name)
+    pos = abspath.rfind("/")
+    if pos < 0:
+        print("Error: you should call %s in fox" %name)
+        exit(1)
+
+    PREIFX = abspath[:pos]
+    INTETN_ACTION_TXT = os.path.join(PREIFX, "intent_action.txt")
+    INTENT_FLAG_TXT = os.path.join(PREIFX, "intent_flag.txt")
+    VISIBILITY_FLAG_TXT = os.path.join(PREIFX, "visibility_flag.txt")
+    WINDOW_LP_FLAG_TXT = os.path.join(PREIFX, "window_lp_flag.txt")
+
 def load_intent_maps():
-    with open(PREIFX+"/intent.txt") as f:
+    with open(INTETN_ACTION_TXT) as f:
         for line in f:
             line_kv = line.split(":")
             intent_map[line_kv[0]] = line_kv[1][:-1]
@@ -60,52 +81,100 @@ def gen_string_from_flag_map(flag, inmap):
 def gen_string_from_flag_table(flag, inmap):
     return inmap[flag]
 
-def convent2hex(number):
-    hex = 0xFFFFFFFF+(-328966) +1 if number < 0 else  number
+def decimal2hex(number):
+    hex = 0xFFFFFFFF+(-328966) +1 if number < 0 else number
 
-def replace_flags(text, pattern, cust_map, mode=None):
+def replace_flags(text, pattern, cust_map, mode="map", type="method"):
     def dashrepl(matchobj):
+        origin = matchobj.group(0)
         flag = int(matchobj.group(1), 0)
-        if mode == "T":
+
+        if mode == "table":
             flag_gen = gen_string_from_flag_table(flag, cust_map)
-        else:
+        elif mode == "map":
             flag_gen = gen_string_from_flag_map(flag, cust_map)
 
         print("%s --> %s" %(flag, flag_gen))
-        return r".%s(%s)" %(pattern, flag_gen)
 
-    p_pattern = r"\.%s\((\d+)\)"%pattern
+        #if type == "method":
+        #    return r".%s(%s)" %(pattern, flag_gen)
+        #else:
+        #    return r".%s(%s)" %(pattern, flag_gen)
+        return origin.sub(flag, flag_gen)
+
+    p_pattern = None
+    if type == "method":
+        p_pattern = r"\.%s\((\d+)\)" % pattern
+    elif type == "bitwise":
+        p_pattern = r"%s [&|=]+ (\d+)" % pattern
+    else:
+        return None
+
     return re.sub(p_pattern, dashrepl, text)
 
 def replace(fsrc):
-    fd = open(fsrc, 'rb+')
-    s = fd.read()
-    for k, v in intent_map.items():
-        s = re.sub(k, v, s);
+    with open(fsrc, 'rb+') as fd:
+        s = fd.read()
 
-    for k, v in services.items():
-        s = re.sub("getSystemService\(\"%s\"\)" %k, "getSystemService(Context.%s)" %v, s);
+        # replace intent actions
+        for k, v in intent_map.items():
+            s = re.sub(k, v, s);
 
-    s = replace_flags(s, "setVisibility", visibility_flag_map, "T")
+        # replace system services
+        for k, v in services.items():
+            s = re.sub("getSystemService\(\"%s\"\)" %k, "getSystemService(Context.%s)" %v, s);
 
-    fd.close()
-    fd = open(fsrc, 'w')
-    fd.write(s)
+        # replace view visibility flags
+        s = replace_flags(s, "setVisibility", visibility_flag_map, "table")
+
+        # replace intent flags
+        s = replace_flags(s, "intent.setFlags", intent_flag_map, "map")
+
+        # replace window layoutparams flags
+        s = replace_flags(s, "lp.flags", window_lp_flag_map, "map", "bitwise")
+        s = replace_flags(s, "mWLayoutParams.flags", window_lp_flag_map, "map", "bitwise")
+
+        fd.seek(0, 0)
+        fd.write(s)
 
 def replace_files(file_lists):
     for i in file_lists:
         print("--> replace %s" %i)
         replace(i)
 
+def replace(str1, str2, fsrc):
+    with open(fsrc, "rb+") as f:
+        s = f.read()
+        s = re.sub(str1, str2, s)
+        f.seek(0, 0)
+        f.write(s)
+
+def replace_string(str1, str2, file_lists):
+    for i in file_lists:
+        print("--> replace %s" %i)
+        replace(str1, str2, i)
+
 def help(name):
-    print("Usage: %s f_i <flag>" %name)
-    print("       %s r <file1, file2, ...>" %name)
+    print("Usage: %s" %name)
+    print("       %s f_i [intent_action_string]" %name)
+    print("       %s f_lp [number]" %name)
+    print("       %s r_s [str_src] [str_des] [file1, file2, ...]" %name)
+    print("       %s a [file1, file2, ...]" %name)
+
+def getname(name):
+    pos = name.rfind('/')
+    if pos >= 0:
+        return name[pos+1:]
+    else:
+        return name
 
 def main(argv):
     if (len(argv) < 3):
-        help("replace.py")
+        help(name)
         return
 
+    init(argv[0])
+    name = getname(argv[0])
     option = argv[1]
     if option == "f_i" or option == "intent" :
         flag = int(argv[2], 0)
@@ -113,10 +182,13 @@ def main(argv):
     elif option == "f_lp":
         flag = int(argv[2], 0)
         print(gen_string_from_flag_map(flag, window_lp_flag_map))
-    elif option == "r":
-        replace_files(argv[1:])
+    elif option == "r_s":
+        # print argv
+        replace_string(argv[2], argv[3], argv[4:])
+    elif option == "a":
+        replace_files(argv[2:])
     else:
-        help("replace.py")
+        help(name)
 
 if __name__ == "__main__":
     load_intent_maps()

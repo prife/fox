@@ -10,7 +10,7 @@ function get_files() {
     find ${dir} -name "${name}.*"
 }
 
-function replace_cp() {
+function main() {
     local src_dir=$1
     local des_dir=$(get_abs_path $2)
     local HERE=$(pwd)
@@ -30,5 +30,5 @@ function replace_cp() {
     cd $HERE
 }
 
-replace_cp $@
+main "$@"
 

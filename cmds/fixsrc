@@ -5,21 +5,9 @@ import sys
 import re
 import os
 
-services={
-        "fingerprint":"FINGERPRINT_SERVICE",
-        "activity": "ACTIVITY_SERVICE",
-        "power":"POWER_SERVICE",
-        "layout_inflater":"LAYOUT_INFLATER_SERVICE",
-        "audio": "AUDIO_SERVICE",
-        "window": "WINDOW_SERVICE",
-        "keyguard": "KEYGUARD_SERVICE",
-        "device_policy": "DEVICE_POLICY_SERVICE",
-        "input_method": "INPUT_METHOD_SERVICE",
-        "telecom": "TELECOM_SERVICE",
-        }
-
 resource_maps = {}
 
+context_service_map = {}
 intent_action_map = {}
 intent_flag_map = {}
 visibility_flag_map = {}
@@ -39,6 +27,7 @@ def init(name):
         exit(1)
 
     PREIFX = abspath[:pos]
+    resource_maps["context_service"] = os.path.join(PREIFX, "context_service.txt")
     resource_maps["intent_action"] = os.path.join(PREIFX, "intent_action.txt")
     resource_maps["intent_flag"] = os.path.join(PREIFX, "intent_flag.txt")
     resource_maps["visibility_flag"] = os.path.join(PREIFX, "visibility_flag.txt")
@@ -113,8 +102,8 @@ def all(fsrc):
             s = re.sub(k, v, s);
 
         # replace system services
-        for k, v in services.items():
-            s = re.sub("getSystemService\(\"%s\"\)" %k, "getSystemService(Context.%s)" %v, s);
+        for k, v in context_service_map.items():
+            s = re.sub("getSystemService\(%s\)" %k, "getSystemService(%s)" %v, s);
 
         # replace view visibility flags
         s = replace_flags(s, "setVisibility", visibility_flag_map, "table")
@@ -166,6 +155,7 @@ def main(argv):
         return
 
     init(sys.argv[0])
+    load_string(resource_maps["context_service"], context_service_map)
     load_string(resource_maps["intent_action"], intent_action_map)
     load_flag(resource_maps["intent_flag"], intent_flag_map)
     load_flag(resource_maps["visibility_flag"], visibility_flag_map)

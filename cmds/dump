@@ -1,7 +1,30 @@
-"%x" %(0xFFFFFFFF+(-328966) +1)
+#!/bin/bash
 
-sed -n 's/[ ]*public static final int \(FLAG_[^ ]*\) = \(0[xX][^;]*\);/\2:Intent.\1/p' /Users/prife/Library/Android/sdk/sources/android-25/android/content/Intent.java > intent_flag.txt
+SDK=/Users/prife/Library/Android/sdk/sources/android-25
 
-sed -n 's/[\t ]*public static final String \([^ ]*\) = "\(android.intent.[^"]*\)";/"\2":Intent.\1/p' /Users/prife/Library/Android/sdk/sources/android-25/android/content/Intent.java > 1.txt
+function dump_intent_flag() {
+    sed -n 's/[ ]*public static final int \(FLAG_[^ ]*\) = \(0[xX][^;]*\);/\2:Intent.\1/p' ${SDK}/android/content/Intent.java
+ > intent_flag.txt
+}
 
-sed -n 's/ *public static final int \(FLAG_[^ ]*\) *= *\(0[xX][^;]*\);/\2:Window.Layout.Params.\1/p' /Users/prife/Library/Android/sdk/sources/android-25/android/view/WindowManager.java > window_lp_flag.txt
+function dump_context_service() {
+    sed -n 's/[\t ]*public static final String \([^ ]*\) = "\([a-zA-Z_]*\)";/"\2":Context.\1/p' ${SDK}/android/content/Context.java > context_service.txt
+}
+
+function dump_intent_action() {
+    sed -n 's/[\t ]*public static final String \([^ ]*\) = "\(android.intent.[^"]*\)";/"\2":Intent.\1/p' ${SDK}/android/content/Intent.java > intent_action.txt
+}
+
+function dump_window_lp_flag() {
+    sed -n 's/ *public static final int \(FLAG_[^ ]*\) *= *\(0[xX][^;]*\);/\2:Window.Layout.Params.\1/p' ${SDK}/android/view/WindowManager.java > window_lp_flag.txt
+}
+
+#-- main --
+if [[ x"$1" == x -a -d "$1" ]]; then
+    SDK=$1
+    echo "warning, SDK path is not valid, use $SDK!"
+fi
+
+dump_intent_flag
+dump_intent_action
+dump_window_lp_flag

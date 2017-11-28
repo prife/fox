@@ -59,6 +59,7 @@
 "android.intent.action.ALARM_CHANGED":Intent.ACTION_ALARM_CHANGED
 "android.intent.action.LOCKED_BOOT_COMPLETED":Intent.ACTION_LOCKED_BOOT_COMPLETED
 "android.intent.action.BOOT_COMPLETED":Intent.ACTION_BOOT_COMPLETED
+"android.intent.action.CLOSE_SYSTEM_DIALOGS":Intent.ACTION_CLOSE_SYSTEM_DIALOGS
 "android.intent.action.PACKAGE_INSTALL":Intent.ACTION_PACKAGE_INSTALL
 "android.intent.action.PACKAGE_ADDED":Intent.ACTION_PACKAGE_ADDED
 "android.intent.action.PACKAGE_REPLACED":Intent.ACTION_PACKAGE_REPLACED

@@ -6,8 +6,11 @@ function get_abs_path() {
     readlink -f $1
 }
 
+SELF_PATH=$(dirname $(get_abs_path $(which $0)))
+
 function dump_intent_flag() {
     sed -n 's/[ ]*public static final int \(FLAG_[^ ]*\) = \(0[xX][^;]*\);/\2:Intent.\1/p' ${SDK}/android/content/Intent.java > intent_flag.txt
+    echo "warning: now please fix $SELF_PATH/intent_flag.txt by hand, there duplicated flags!"
 }
 
 function dump_context_service() {
@@ -30,9 +33,9 @@ fi
 
 SDK=$1
 
-SELF_PATH=$(dirname $(get_abs_path $(which $0)))
 cd $SELF_PATH
 
 dump_intent_flag
 dump_intent_action
+dump_context_service
 dump_window_lp_flag

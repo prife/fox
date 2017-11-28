@@ -136,7 +136,7 @@ def replace_string(str1, str2, file_lists):
         replace(str1, str2, i)
 
 def help(name):
-    print("Usage: %s" %name)
+    print("Usage: %s [option] <args...>" %name)
     print("       %s f_i [intent_action_string]" %name)
     print("       %s f_lp [number]" %name)
     print("       %s r_s [str_src] [str_des] [file1, file2, ...]" %name)
@@ -150,6 +150,7 @@ def getname(name):
         return name
 
 def main(argv):
+    name = getname(argv[0])
     if (len(argv) < 3):
         help(name)
         return
@@ -161,7 +162,6 @@ def main(argv):
     load_flag(resource_maps["visibility_flag"], visibility_flag_map)
     load_flag(resource_maps["window_lp_flag"], window_lp_flag_map)
 
-    name = getname(argv[0])
     option = argv[1]
     if option == "f_i" or option == "intent" :
         flag = int(argv[2], 0)

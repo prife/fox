@@ -18,13 +18,9 @@ services={
         "telecom": "TELECOM_SERVICE",
         }
 
-PREIFX = ""
-INTETN_ACTION_TXT = ""
-INTENT_FLAG_TXT = ""
-VISIBILITY_FLAG_TXT = ""
-WINDOW_LP_FLAG_TXT = ""
+resource_maps = {}
 
-intent_map = {}
+intent_action_map = {}
 intent_flag_map = {}
 visibility_flag_map = {}
 window_lp_flag_map = {}
@@ -43,16 +39,16 @@ def init(name):
         exit(1)
 
     PREIFX = abspath[:pos]
-    INTETN_ACTION_TXT = os.path.join(PREIFX, "intent_action.txt")
-    INTENT_FLAG_TXT = os.path.join(PREIFX, "intent_flag.txt")
-    VISIBILITY_FLAG_TXT = os.path.join(PREIFX, "visibility_flag.txt")
-    WINDOW_LP_FLAG_TXT = os.path.join(PREIFX, "window_lp_flag.txt")
+    resource_maps["intent_action"] = os.path.join(PREIFX, "intent_action.txt")
+    resource_maps["intent_flag"] = os.path.join(PREIFX, "intent_flag.txt")
+    resource_maps["visibility_flag"] = os.path.join(PREIFX, "visibility_flag.txt")
+    resource_maps["window_lp_flag"] = os.path.join(PREIFX, "window_lp_flag.txt")
 
-def load_intent_maps():
-    with open(INTETN_ACTION_TXT) as f:
+def load_string():
+    with open(flag_file, out_map) as f:
         for line in f:
             line_kv = line.split(":")
-            intent_map[line_kv[0]] = line_kv[1][:-1]
+            out_map[line_kv[0]] = line_kv[1][:-1]
 
 def load_flag(flag_file, out_map):
     with open(flag_file) as f:
@@ -117,7 +113,7 @@ def replace(fsrc):
         s = fd.read()
 
         # replace intent actions
-        for k, v in intent_map.items():
+        for k, v in intent_action_map.items():
             s = re.sub(k, v, s);
 
         # replace system services
@@ -173,7 +169,12 @@ def main(argv):
         help(name)
         return
 
-    init(argv[0])
+    init(sys.argv[0])
+    load_string(resource_maps["intent_action"], intent_action_map)
+    load_flag(resource_maps["intent_flag"], intent_flag_map)
+    load_flag(resource_maps["visibility_flag"], visibility_flag_map)
+    load_flag(resource_maps["window_lp_flag"], window_lp_flag_map)
+
     name = getname(argv[0])
     option = argv[1]
     if option == "f_i" or option == "intent" :
@@ -191,8 +192,4 @@ def main(argv):
         help(name)
 
 if __name__ == "__main__":
-    load_intent_maps()
-    load_flag(INTENT_FLAG_TXT, intent_flag_map)
-    load_flag(VISIBILITY_FLAG_TXT, visibility_flag_map)
-    load_flag(WINDOW_LP_FLAG_TXT, window_lp_flag_map)
     main(sys.argv)

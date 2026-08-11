@@ -1,84 +1,54 @@
-#!/bin/bash
+#!/usr/bin/env python3
+"""Copy matching XML lines into companion resource XML files."""
 
-read -r -d '' sedpy<< EOM
-#!/usr/bin/python
+from __future__ import annotations
 
-# encoding: UTF-8
-import sys
+import argparse
+import re
+from pathlib import Path
 
-def edit_file(fname, action, line, buffer):
-    with open(fname, "rb+") as f:
-        lists = []
-        for l in f:
-            lists.append(l)
-        buffer += '\n'
-        lists.insert(line, buffer)
-        f.seek(0, 0)
-        f.writelines(lists)
+
+def insert_resource_line(target: Path, line: str) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists():
+        target.write_text(
+            '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n'
+            f"{line}\n</resources>\n",
+            encoding="utf-8",
+        )
+        return
+
+    content = target.read_text(encoding="utf-8")
+    match = re.search(r"(?m)^[ \t]*</resources>[ \t]*$", content)
+    if match is None:
+        raise ValueError(f"{target} has no </resources> closing tag")
+    updated = f"{content[:match.start()]}{line}\n{content[match.start():]}"
+    target.write_text(updated, encoding="utf-8")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Copy matching XML resource lines into suffixed destination XML files."
+    )
+    parser.add_argument("pattern", help="regular expression to search for")
+    parser.add_argument("source_dir", type=Path)
+    parser.add_argument("destination_dir", type=Path)
+    parser.add_argument("suffix", help="suffix inserted before the .xml extension")
+    args = parser.parse_args()
+
+    expression = re.compile(args.pattern)
+    for source in sorted(args.source_dir.rglob("*.xml")):
+        lines = source.read_text(encoding="utf-8").splitlines()
+        matches = [line for line in lines if expression.search(line)]
+        if not matches:
+            continue
+        relative = source.relative_to(args.source_dir)
+        destination_name = f"{source.stem}{args.suffix}{source.suffix}"
+        destination = args.destination_dir / relative.parent / destination_name
+        for line in matches:
+            print(f"{source}: {line} -> {destination}")
+            insert_resource_line(destination, line)
+
 
 if __name__ == "__main__":
-    name = sys.argv[1]
-    line = int(sys.argv[2], 0)
-    buffer = sys.argv[3]
-    edit_file(name, None, line, buffer)
-EOM
-
-
-function get_pattern_files() {
-    local pattern=$1
-    local workdir=$2
-    grep $pattern -rwl $workdir
-}
-
-function get_pattern_line() {
-    local pattern=$1
-    local file=$2
-    grep $pattern -wh $file
-}
-
-function get_insert_position() {
-    local file=$1
-    local line=$(grep -E "[ \t]*</resources>" -rnw $1 | cut -d ":" -f 1)
-    echo $(($line-1))
-    #echo $line
-}
-
-function insert_string_to_xml() {
-    local line="$1"
-    local file="$2"
-    echo "-----> $file"
-    if [ -f $file ]; then
-        local pos=$(get_insert_position $file)
-        #sed "$pos a$line" -i $file
-        python -c "$sedpy" "$file" "$pos" "$line"
-        return
-    fi
-
-cat <<EOF > $file
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-$line
-</resources>
-EOF
-}
-
-function main() {
-    local pattern=$1
-    local srcdir=$2
-    local desdir=$3
-    local suffix=$4
-
-    local files=($(get_pattern_files $pattern $srcdir))
-    for f in ${files[*]}; do
-        local d=$(dirname $f)
-        local name=$(basename $f)
-        local line=$(get_pattern_line $pattern $f)
-        local nd=$desdir/$d
-        local nf=$desdir/$d/${name%.*}$suffix.${name#*.}
-        echo "--> $f : $line : $nf"
-        mkdir -p $nd
-        insert_string_to_xml "$line" "$nf"
-    done
-}
-
-main "$@"
+    main()

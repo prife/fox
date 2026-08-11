@@ -1,23 +1,23 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-function get_abs_path() {
-    readlink -f $1 
+set -euo pipefail
+
+SELF_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BIN_DIR="${1:-${FOX_BIN_DIR:-${HOME}/.local/bin}}"
+
+mkdir -p "${BIN_DIR}"
+
+link_tool() {
+    local source="$1"
+    local name="$2"
+    ln -sfn "${source}" "${BIN_DIR}/${name}"
+    printf 'linked %s -> %s\n' "${BIN_DIR}/${name}" "${source}"
 }
 
-SELF_PATH=$(dirname $(get_abs_path $(which $0)))
+link_tool "${SELF_PATH}/apktool" apktool
+link_tool "${SELF_PATH}/baksmali" baksmali
+link_tool "${SELF_PATH}/smali" smali
+link_tool "${SELF_PATH}/jadx-1.5.6/bin/jadx" jadx
+link_tool "${SELF_PATH}/jadx-1.5.6/bin/jadx-gui" jadx-gui
 
-cd ~/bin
-ln -fs $SELF_PATH/apktool
-ln -fs $SELF_PATH/baksmali
-ln -fs $SELF_PATH/smali
-ln -fs $SELF_PATH/jadx-0.6.1/bin/jadx
-ln -fs $SELF_PATH/jadx-0.6.1/bin/jadx-gui
-
-case $(uname -s) in
-    Linux)
-        ln -fs $SELF_PATH/dextra.ELF64 dextra
-        ;;
-    Darwin)
-        ln -fs $SELF_PATH/dextra dextra
-        ;;
-esac
+printf '\nAdd this directory to PATH if it is not already present:\n  %s\n' "${BIN_DIR}"

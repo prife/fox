@@ -1,10 +1,19 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-function get_abs_path() {
-    readlink -f $1
-}
+set -euo pipefail
 
-SELF_PATH=$(dirname $(get_abs_path $(which $0)))
+SELF_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+FOX_ROOT="$(cd -- "${SELF_PATH}/.." && pwd -P)"
 
-cd $SELF_PATH
-git pull
+if ! git -C "${FOX_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'update: %s is not a Git work tree\n' "${FOX_ROOT}" >&2
+    exit 1
+fi
+
+branch="$(git -C "${FOX_ROOT}" branch --show-current)"
+if [[ -z "${branch}" ]]; then
+    printf 'update: detached HEAD; switch to a branch before updating\n' >&2
+    exit 1
+fi
+
+git -C "${FOX_ROOT}" pull --ff-only

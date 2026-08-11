@@ -1,41 +1,200 @@
-#!/bin/bash
+#!/usr/bin/env python3
+"""Generate Fox literal maps from Android framework source files."""
 
-SDK=/Users/prife/Library/Android/sdk/sources/android-25
+from __future__ import annotations
 
-function get_abs_path() {
-    readlink -f $1
+import argparse
+import re
+import shutil
+import sys
+from pathlib import Path
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+ANDROID_REF = "android-16.0.0_r4"
+ANDROID_BASE_URL = (
+    "https://android.googlesource.com/platform/frameworks/base/+/"
+    f"{ANDROID_REF}/core/java/android"
+)
+
+SOURCE_FILES = {
+    "Intent.java": "content/Intent.java",
+    "Context.java": "content/Context.java",
+    "WindowManager.java": "view/WindowManager.java",
+    "View.java": "view/View.java",
 }
 
-SELF_PATH=$(dirname $(get_abs_path $(which $0)))
 
-function dump_intent_flag() {
-    sed -n 's/[ ]*public static final int \(FLAG_[^ ]*\) = \(0[xX][^;]*\);/\2:Intent.\1/p' ${SDK}/android/content/Intent.java > intent_flag.txt
-    echo "warning: now please fix $SELF_PATH/intent_flag.txt by hand, there duplicated flags!"
-}
+def fail(message: str) -> "None":
+    print(f"dump: {message}", file=sys.stderr)
+    raise SystemExit(1)
 
-function dump_context_service() {
-    sed -n 's/[\t ]*public static final String \([^ ]*\) = "\([a-zA-Z_]*\)";/"\2":Context.\1/p' ${SDK}/android/content/Context.java > context_service.txt
-}
 
-function dump_intent_action() {
-    sed -n 's/[\t ]*public static final String \([^ ]*\) = "\(android.intent.[^"]*\)";/"\2":Intent.\1/p' ${SDK}/android/content/Intent.java > intent_action.txt
-}
+def normalize_value(value: str) -> str:
+    value = value.strip()
+    value = re.sub(r"/\*.*?\*/", "", value)
+    value = re.sub(r"//.*$", "", value)
+    value = value.strip().rstrip("lL")
+    if not value:
+        raise ValueError("empty expression")
+    return value
 
-function dump_window_lp_flag() {
-    sed -n 's/ *public static final int \(FLAG_[^ ]*\) *= *\(0[xX][^;]*\);/\2:WindowManager.LayoutParams.\1/p' ${SDK}/android/view/WindowManager.java > window_lp_flag.txt
-}
 
-#-- main --
-if [ x"$1" == x -o ! -d "$1" -o ! -f "$1"/android/content/Intent.java ]; then
-    echo "warning, SDK path [$SDK] is not valid!"
-    exit 1
-fi
+def parse_int_expression(value: str, constants: dict[str, int]) -> int | None:
+    value = normalize_value(value)
+    if re.fullmatch(r"[-+]?0[xX][0-9a-fA-F]+|[-+]?\d+", value):
+        return int(value, 0)
 
-SDK=$1
+    expression = value
+    for name, number in constants.items():
+        expression = re.sub(rf"\b{re.escape(name)}\b", str(number), expression)
 
-cd $SELF_PATH
+    if not re.fullmatch(r"[\d\s()+\-<>&|~*/]+", expression):
+        return None
+    try:
+        result = eval(expression, {"__builtins__": {}}, {})
+    except (ArithmeticError, SyntaxError):
+        return None
+    return result if isinstance(result, int) else None
 
-dump_intent_flag
-dump_intent_action
-dump_context_service
-dump_window_lp_flag
+
+def parse_string_constants(source: str, class_name: str, name_pattern: str | None = None) -> list[str]:
+    entries: dict[str, str] = {}
+    pattern = re.compile(
+        r'public\s+static\s+final\s+String\s+([A-Z][A-Z0-9_]*)\s*=\s*"([^"]+)";'
+    )
+    for name, value in pattern.findall(source):
+        if name_pattern and not re.fullmatch(name_pattern, name):
+            continue
+        entries[value] = f"{class_name}.{name}"
+    return [f'"{value}":{entries[value]}' for value in sorted(entries)]
+
+
+def parse_int_constants(source: str, class_name: str, name_pattern: str) -> list[str]:
+    values: dict[str, int] = {}
+    entries: dict[int, list[str]] = {}
+    pattern = re.compile(
+        r"public\s+static\s+final\s+int\s+([A-Z][A-Z0-9_]*)\s*=\s*([^;]+);"
+    )
+    for name, raw_value in pattern.findall(source):
+        number = parse_int_expression(raw_value, values)
+        if number is None:
+            continue
+        values[name] = number
+        if re.fullmatch(name_pattern, name):
+            entries.setdefault(number, []).append(f"{class_name}.{name}")
+
+    lines: list[str] = []
+    for number in sorted(entries):
+        for constant in sorted(entries[number]):
+            lines.append(f"0x{number & 0xFFFFFFFF:08x}:{constant}")
+    return lines
+
+
+def load_sources(source_root: Path | None, download: bool) -> dict[str, str]:
+    source_data: dict[str, str] = {}
+
+    if source_root is not None:
+        for file_name, relative_path in SOURCE_FILES.items():
+            candidates = [
+                source_root / "android" / relative_path,
+                source_root / "sources" / "android" / relative_path,
+                source_root / relative_path,
+            ]
+            match = next((path for path in candidates if path.is_file()), None)
+            if match is None:
+                fail(
+                    f"could not find {relative_path} below {source_root}; "
+                    "use an Android SDK sources directory or --download"
+                )
+            source_data[file_name] = match.read_text(encoding="utf-8")
+        return source_data
+
+    if not download:
+        fail("provide <sdk-sources-dir> or use --download")
+
+    import base64
+    import urllib.request
+
+    cache_dir = SCRIPT_DIR / ".cache" / ANDROID_REF
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    for file_name, relative_path in SOURCE_FILES.items():
+        target = cache_dir / file_name
+        if not target.exists():
+            url = f"{ANDROID_BASE_URL}/{relative_path}?format=TEXT"
+            print(f"download: {url}", file=sys.stderr)
+            try:
+                with urllib.request.urlopen(url, timeout=60) as response:
+                    target.write_bytes(base64.b64decode(response.read()))
+            except OSError as exc:
+                fail(f"unable to download {url}: {exc}")
+        source_data[file_name] = target.read_text(encoding="utf-8")
+    return source_data
+
+
+def write_map(filename: str, lines: list[str]) -> None:
+    destination = SCRIPT_DIR / filename
+    destination.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"wrote {destination} ({len(lines)} entries)")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Regenerate Fox Android constant maps; defaults to Android 16 API 36 source."
+    )
+    parser.add_argument(
+        "sdk_sources",
+        nargs="?",
+        type=Path,
+        help="Android SDK source root (for example: $ANDROID_HOME/sources/android-36)",
+    )
+    parser.add_argument(
+        "--download",
+        action="store_true",
+        help=f"download AOSP {ANDROID_REF} sources into cmds/.cache",
+    )
+    parser.add_argument(
+        "--clean-cache",
+        action="store_true",
+        help="remove downloaded source cache and exit",
+    )
+    args = parser.parse_args()
+
+    cache_dir = SCRIPT_DIR / ".cache"
+    if args.clean_cache:
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
+            print(f"removed {cache_dir}")
+        return
+
+    source = load_sources(args.sdk_sources, args.download)
+    intent = source["Intent.java"]
+    context = source["Context.java"]
+    window_manager = source["WindowManager.java"]
+    view = source["View.java"]
+
+    intent_strings = parse_string_constants(
+        intent,
+        "Intent",
+        r"(?:ACTION|EXTRA|CATEGORY)_[A-Z0-9_]+",
+    )
+    context_services = parse_string_constants(
+        context,
+        "Context",
+        r"(?:[A-Z0-9_]*SERVICE|COUNTRY_DETECTOR|DEVICE_IDLE_CONTROLLER)",
+    )
+    intent_flags = parse_int_constants(intent, "Intent", r"FLAG_(?:ACTIVITY|RECEIVER|GRANT)_[A-Z0-9_]+")
+    window_flags = parse_int_constants(
+        window_manager, "WindowManager.LayoutParams", r"FLAG_[A-Z0-9_]+"
+    )
+    visibility_flags = parse_int_constants(view, "View", r"(?:VISIBLE|INVISIBLE|GONE)")
+
+    write_map("intent_action.txt", intent_strings)
+    write_map("context_service.txt", context_services)
+    write_map("intent_flag.txt", intent_flags)
+    write_map("window_lp_flag.txt", window_flags)
+    write_map("visibility_flag.txt", visibility_flags)
+
+
+if __name__ == "__main__":
+    main()

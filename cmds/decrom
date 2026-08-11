@@ -1,165 +1,283 @@
-#!/bin/bash
+#!/usr/bin/env bash
+#
+# Decompile APK/JAR/DEX inputs and ART OAT/ODEX containers.
+#
+# Examples:
+#   fox decrom apk app.apk out
+#   fox decrom app /path/to/rom/system/framework /path/to/rom/system/app/Foo
+#   fox decrom all /path/to/rom/system
+#   fox decrom oat boot.oat framework/arm64 out
 
-DEXTRA=dextra
-JADX=jadx
-#{normal, fallback}
-JADX_MODE=normal
-AOSP_FRAMWROKDIR=
+set -euo pipefail
 
-function get_abs_path() {
-    readlink -f $1 
+SELF_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+FOX_ROOT="$(cd -- "${SELF_PATH}/.." && pwd -P)"
+EXTRAS="${FOX_ROOT}/extras"
+JADX="${EXTRAS}/jadx-1.5.6/bin/jadx"
+BAKSMALI="${EXTRAS}/baksmali"
+SMALI="${EXTRAS}/smali"
+
+die() {
+    printf 'decrom: %s\n' "$*" >&2
+    exit 1
 }
 
-function oat2smali() {
-    local oat=$1
-    local _outdir=$(basename $1)
-    local outdir=${_outdir%.*}
-    baksmali x -c boot.oat -d ${AOSP_FRAMWROKDIR} ${oat} -o ${outdir}
+usage() {
+    cat <<'EOF'
+usage:
+  decrom apk <apk|aab|apks|xapk|apkm|jar|dex> [output-dir] [jadx options...]
+  decrom app <framework-dir> <app-dir> [output-dir]
+  decrom oat <oat|odex> <framework-dir> [output-dir]
+  decrom all <system-or-framework-dir> [output-dir]
+  decrom check <directory>
+
+Notes:
+  * "apk" is the preferred path for app containers. Modern JADX reads APK,
+    AAB, APKS, XAPK and APKM directly.
+  * "oat" uses baksmali's maintained ART/OAT parser. It emits every embedded
+    dex entry and then runs JADX on the resulting dex directory.
+  * <framework-dir> should contain boot.oat or the framework jars/OAT files
+    needed for deodexing. Android 15/16 system images commonly use arm64.
+EOF
 }
 
-function smali2dex() {
-    local smalidir=$1
-    local outdex=${2:-classes.dex}
-    smali a ${smalidir} -o ${outdex}
+require_toolchain() {
+    [[ -x "${JADX}" ]] || die "missing JADX: ${JADX}"
+    [[ -x "${BAKSMALI}" ]] || die "missing baksmali wrapper: ${BAKSMALI}"
+    [[ -x "${SMALI}" ]] || die "missing smali wrapper: ${SMALI}"
 }
 
-function oat2dex() {
-    local oat=$1
-    local _outdir=$(basename $1)
-    local smalidir=${_outdir%.*}
-    local outdex=${2:-classes.dex}
-    echo "oat/odex -> smali"
-    baksmali x -c boot.oat -d ${AOSP_FRAMWROKDIR} ${oat} -o ${smalidir}
-    echo "smali -> dex"
-    smali a ${smalidir} -o ${outdex}
-    rm -rf ${smalidir}
+absolute_path() {
+    python3 - "$1" <<'PY'
+from pathlib import Path
+import sys
+
+print(Path(sys.argv[1]).expanduser().resolve(strict=False))
+PY
 }
 
-function get_classesdex_in_oat() {
-    local oat=$1
-    #dextra -l ${oat} 2> /dev/null | sed -n "s/Dex header.*.jar:\(classes.*.dex\)/\1/p"
-    dextra -l ${oat} 2> /dev/null | sed -n "s/Dex header.*:\(classes.*.dex\)/\1/p"
-}
-
-function check_has_multidex() {
-    local lists=$(find $1 -name "*.oat" -o -name "*.odex")
-    for i in ${lists[*]}; do
-        local out=$(get_classesdex_in_oat $i)
-        if [ x"${out}" != x ]; then
-            echo "$i has multi dexes!"
+find_boot_oat() {
+    local framework_dir="$1"
+    local candidate
+    for candidate in \
+        "${framework_dir}/boot.oat" \
+        "${framework_dir}/oat/arm64/boot.oat" \
+        "${framework_dir}/oat/arm/boot.oat" \
+        "${framework_dir}/arm64/boot.oat" \
+        "${framework_dir}/arm/boot.oat"; do
+        if [[ -f "${candidate}" ]]; then
+            printf '%s\n' "${candidate}"
+            return 0
         fi
+    done
+    return 1
+}
+
+run_jadx() {
+    local output="$1"
+    shift
+    mkdir -p "${output}"
+    "${JADX}" --show-bad-code --output-dir "${output}" "$@"
+}
+
+decompile_container() {
+    local input
+    input="$(absolute_path "$1")"
+    local output="${2:-${PWD}/$(basename "${input%.*}")-jadx}"
+    shift 2 || true
+
+    [[ -f "${input}" ]] || die "input does not exist: ${input}"
+    run_jadx "$(absolute_path "${output}")" "$@" "${input}"
+}
+
+list_dex_entries() {
+    "${BAKSMALI}" list dex "$1"
+}
+
+extract_oat_dexes() {
+    local oat
+    oat="$(absolute_path "$1")"
+    local framework_dir
+    framework_dir="$(absolute_path "$2")"
+    local dex_dir
+    dex_dir="$(absolute_path "$3")"
+
+    [[ -f "${oat}" ]] || die "OAT/ODEX file does not exist: ${oat}"
+    [[ -d "${framework_dir}" ]] || die "framework directory does not exist: ${framework_dir}"
+    mkdir -p "${dex_dir}"
+
+    local boot_oat=""
+    boot_oat="$(find_boot_oat "${framework_dir}" || true)"
+    if [[ -z "${boot_oat}" && "$(basename -- "${oat}")" != "boot.oat" ]]; then
+        printf 'decrom: warning: boot.oat was not found under %s; deodex output may contain unresolved references\n' \
+            "${framework_dir}" >&2
+    fi
+
+    local -a entries=()
+    mapfile -t entries < <(list_dex_entries "${oat}")
+    ((${#entries[@]} > 0)) || die "no embedded dex entries found in ${oat}"
+
+    local entry safe_name dex_file index=1
+    for entry in "${entries[@]}"; do
+        safe_name="$(basename -- "${entry}")"
+        safe_name="${safe_name//:/_}"
+        safe_name="${safe_name//[^[:alnum:]._-]/_}"
+        [[ "${safe_name}" == *.dex ]] || safe_name="${safe_name}.dex"
+        dex_file="$(printf '%s/%02d-%s' "${dex_dir}" "${index}" "${safe_name}")"
+
+        printf 'deodex: %s -> %s\n' "${entry}" "${dex_file}"
+        if [[ -n "${boot_oat}" ]]; then
+            "${BAKSMALI}" deodex --bootclasspath "${boot_oat}" --classpath-dir "${framework_dir}" \
+                "${oat}/\"${entry}\"" --output "${dex_dir}/smali-${index}"
+        else
+            "${BAKSMALI}" deodex --classpath-dir "${framework_dir}" \
+                "${oat}/\"${entry}\"" --output "${dex_dir}/smali-${index}"
+        fi
+        "${SMALI}" assemble "${dex_dir}/smali-${index}" --output "${dex_file}"
+        index=$((index + 1))
     done
 }
 
-function jadx_wrapper() {
-    case $JADX_MODE in
-        normal)
-            $JADX --show-bad-code "$@"
+decompile_oat() {
+    local oat="$1"
+    local framework_dir="$2"
+    local output="${3:-${PWD}/$(basename "${oat%.*}")-decompiled}"
+    output="$(absolute_path "${output}")"
+    local dex_dir="${output}/dex"
+    local jadx_dir="${output}/jadx"
+
+    mkdir -p "${output}"
+    extract_oat_dexes "${oat}" "${framework_dir}" "${dex_dir}"
+    local -a dex_files=()
+    mapfile -t dex_files < <(find "${dex_dir}" -maxdepth 1 -type f -name '*.dex' | sort)
+    ((${#dex_files[@]} > 0)) || die "no DEX files were produced from ${oat}"
+    run_jadx "${jadx_dir}" "${dex_files[@]}"
+    printf 'output: %s\n' "${output}"
+}
+
+find_framework_root() {
+    local input
+    input="$(absolute_path "$1")"
+    if [[ -d "${input}/framework" ]]; then
+        printf '%s\n' "${input}/framework"
+    else
+        printf '%s\n' "${input}"
+    fi
+}
+
+decompile_all() {
+    local root
+    root="$(find_framework_root "$1")"
+    local output="${2:-${PWD}/framework-decompiled}"
+    output="$(absolute_path "${output}")"
+    mkdir -p "${output}/jadx" "${output}/oat"
+
+    local -a containers=()
+    mapfile -t containers < <(find "${root}" -type f \( -name '*.jar' -o -name '*.apk' -o -name '*.apex' \) | sort)
+    if ((${#containers[@]} > 0)); then
+        printf 'jadx: decompiling %d framework container(s)\n' "${#containers[@]}"
+        run_jadx "${output}/jadx" "${containers[@]}"
+    fi
+
+    local -a oat_files=()
+    mapfile -t oat_files < <(find "${root}" -type f \( -name '*.oat' -o -name '*.odex' \) | sort)
+    local oat
+    for oat in "${oat_files[@]}"; do
+        local name
+        name="$(basename "${oat%.*}")"
+        decompile_oat "${oat}" "${root}" "${output}/oat/${name}"
+    done
+
+    if ((${#containers[@]} == 0 && ${#oat_files[@]} == 0)); then
+        die "no APK/JAR/APEX/OAT/ODEX input found under ${root}"
+    fi
+    printf 'output: %s\n' "${output}"
+}
+
+check_oat_files() {
+    local directory
+    directory="$(absolute_path "$1")"
+    [[ -d "${directory}" ]] || die "directory does not exist: ${directory}"
+
+    local oat
+    while IFS= read -r oat; do
+        printf '===== %s =====\n' "${oat}"
+        "${BAKSMALI}" list dex "${oat}" || true
+    done < <(find "${directory}" -type f \( -name '*.oat' -o -name '*.odex' \) | sort)
+}
+
+main() {
+    require_toolchain
+    local action="${1:-}"
+    case "${action}" in
+        apk)
+            shift
+            (($# >= 1)) || {
+                usage
+                exit 1
+            }
+            local input="$1"
+            shift
+            local output="${PWD}/$(basename "${input%.*}")-jadx"
+            if [[ "${1:-}" != -* && $# -gt 0 ]]; then
+                output="$1"
+                shift
+            fi
+            decompile_container "${input}" "${output}" "$@"
             ;;
-        fallback)
-            $JADX -f "$@"
+        app)
+            (($# == 3 || $# == 4)) || {
+                usage
+                exit 1
+            }
+            local framework="$2"
+            local app_dir="$3"
+            local output="${4:-${PWD}/$(basename "${app_dir}")-decompiled}"
+            local -a apks=()
+            mapfile -t apks < <(find "${app_dir}" -maxdepth 2 -type f -name '*.apk' | sort)
+            if ((${#apks[@]} == 0)); then
+                die "no APK found under ${app_dir}"
+            fi
+            mkdir -p "${output}"
+            local apk
+            for apk in "${apks[@]}"; do
+                decompile_container "${apk}" "${output}/$(basename "${apk%.*}")"
+            done
+            local -a odexes=()
+            mapfile -t odexes < <(find "${app_dir}" -type f \( -name '*.odex' -o -name '*.oat' \) | sort)
+            local odex
+            for odex in "${odexes[@]}"; do
+                decompile_oat "${odex}" "${framework}" "${output}/$(basename "${odex%.*}")-oat"
+            done
+            ;;
+        oat)
+            (($# == 3 || $# == 4)) || {
+                usage
+                exit 1
+            }
+            decompile_oat "$2" "$3" "${4:-${PWD}/$(basename "${2%.*}")-decompiled}"
+            ;;
+        all)
+            (($# == 2 || $# == 3)) || {
+                usage
+                exit 1
+            }
+            decompile_all "$2" "${3:-${PWD}/framework-decompiled}"
+            ;;
+        check)
+            (($# == 2)) || {
+                usage
+                exit 1
+            }
+            check_oat_files "$2"
+            ;;
+        -h|--help|help|"")
+            usage
+            ;;
+        *)
+            die "unknown action: ${action}"
             ;;
     esac
 }
 
-function extract_dex_from_frameworks() {
-    local oatdir=$(get_abs_path $1)
-    local suffix=$2
-    local lists=$(find ${oatdir} -name "*.${suffix}")
-    for file in ${lists[*]}
-    do
-        echo "-----> $file"
-        local base=$(basename "$file")
-        local tmp=${base#boot-}
-        local package=$(basename ${tmp%.*})
-        oat2dex ${file} ${package}.dex
-        echo "jadx: $dex -> to java"
-        jadx_wrapper ${package}.dex
-
-        local lists_more=($(get_classesdex_in_oat ${file}))
-        for more in ${lists_more[*]}
-        do
-            oat2dex ${file}/${more} ${package}-${more}
-            echo "jadx: $dex -> to java"
-            jadx_wrapper ${package}-${more} -d ${package}
-        done
-    done
-}
-
-function extract_dex_from_frameworks_jars() {
-    local framework_dir=$(get_abs_path $1)
-    local lists=$(find ${framework_dir} -name "*.jar")
-    for file in ${lists[*]}
-    do
-        echo "jadx: $file -> to java"
-        jadx_wrapper ${file}
-    done
-}
-
-function decompile_framework() {
-    local rom_dir=$(get_abs_path $1)
-    mkdir -p framework
-    HERE=$(pwd)
-    cd framework
-    extract_dex_from_frameworks ${rom_dir}/framework/arm64 oat
-    extract_dex_from_frameworks ${rom_dir}/framework/oat/arm64 odex
-    cd $HERE
-}
-
-function decompile_app() {
-    local app_dir=$(get_abs_path $1)
-    local app_name=$(basename ${app_dir})
-    local subdir=arm64
-    if [ ! -f ${app_dir}/oat/arm64/${app_name}.odex ]; then
-        if [ ! -f ${app_dir}/oat/arm/${app_name}.odex ]; then
-           jadx_wrapper -e ${app_dir}/${app_name}.apk
-           return
-        else
-            subdir=arm
-        fi
-    fi
-    local file=$(find ${app_dir}/oat/${subdir} -name "*.odex")
-    oat2dex ${file} classes.dex
-    cp ${app_dir}/${app_name}.apk ./
-    jar -uvf ${app_name}.apk classes.dex
-    local lists_more=($(get_classesdex_in_oat ${file}))
-    for more in ${lists_more[*]}
-    do
-        echo $more
-        oat2dex ${file}/${more} ${more}
-        jar -uvf ${app_name}.apk ${more}
-    done
-    jadx_wrapper -e ${app_name}.apk
-    mv ${app_name}.apk *.dex  ${app_name}
-}
-
-action=$1
-shift 1
-case $action in
-    all-jar)
-        extract_dex_from_frameworks_jars $1/framework/
-        ;;
-    all)
-        AOSP_FRAMWROKDIR=$(get_abs_path $1/framework/arm64)
-        decompile_framework "$@"
-        ;;
-    all-fallback)
-        JADX_MODE=fallback
-        AOSP_FRAMWROKDIR=$(get_abs_path $1/framework/arm64)
-        decompile_framework "$@"
-        ;;
-    app)
-        AOSP_FRAMWROKDIR=$(get_abs_path $1/framework/arm64)
-        decompile_app $2
-        ;;
-    app-fallback)
-        JADX_MODE=fallback
-        AOSP_FRAMWROKDIR=$(get_abs_path $1/framework/arm64)
-        decompile_app $2
-        ;;
-    check)
-        check_has_multidex $1
-        ;;
-    *)
-        ;;
-esac
+main "$@"

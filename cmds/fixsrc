@@ -1,181 +1,181 @@
-#!/usr/bin/python
+#!/usr/bin/env python3
+"""Improve selected JADX Java literals using current Android constant maps."""
 
-# encoding: UTF-8
-import sys
+from __future__ import annotations
+
+import argparse
 import re
-import os
+import sys
+from pathlib import Path
 
-resource_maps = {}
 
-context_service_map = {}
-intent_action_map = {}
-intent_flag_map = {}
-visibility_flag_map = {}
-window_lp_flag_map = {}
+SCRIPT_DIR = Path(__file__).resolve().parent
 
-def which(file):
-    for path in os.environ["PATH"].split(os.pathsep):
-        if os.path.exists(os.path.join(path, file)):
-            return os.path.join(path, file)
-    return None
 
-def init(name):
-    abspath = os.path.abspath(name)
-    pos = abspath.rfind("/")
-    if pos < 0:
-        print("Error: you should call %s in fox" %name)
-        exit(1)
+def load_string_map(filename: str) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for raw_line in (SCRIPT_DIR / filename).read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, value = line.split(":", 1)
+        mapping[key] = value
+    return mapping
 
-    PREIFX = abspath[:pos]
-    resource_maps["context_service"] = os.path.join(PREIFX, "context_service.txt")
-    resource_maps["intent_action"] = os.path.join(PREIFX, "intent_action.txt")
-    resource_maps["intent_flag"] = os.path.join(PREIFX, "intent_flag.txt")
-    resource_maps["visibility_flag"] = os.path.join(PREIFX, "visibility_flag.txt")
-    resource_maps["window_lp_flag"] = os.path.join(PREIFX, "window_lp_flag.txt")
 
-def load_string(flag_file, out_map):
-    with open(flag_file) as f:
-        for line in f:
-            line_kv = line.split(":")
-            out_map[line_kv[0]] = line_kv[1][:-1]
+def load_flag_map(filename: str) -> dict[int, str]:
+    mapping: dict[int, str] = {}
+    for raw_line in (SCRIPT_DIR / filename).read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        key, value = line.split(":", 1)
+        number = int(key, 0)
+        # Android reuses several flag bits across distinct APIs. Intent flag
+        # aliases may be ACTION/RECEIVER/GRANT-specific; preserve activity
+        # names first because this fixer targets Intent#setFlags/addFlags.
+        current = mapping.get(number)
+        is_activity = value.startswith("Intent.FLAG_ACTIVITY_")
+        is_receiver = value.startswith("Intent.FLAG_RECEIVER_")
+        current_is_activity = current is not None and current.startswith("Intent.FLAG_ACTIVITY_")
+        current_is_receiver = current is not None and current.startswith("Intent.FLAG_RECEIVER_")
+        if current is None or (is_activity and not current_is_activity) or (
+            not is_receiver and current_is_receiver
+        ):
+            mapping[number] = value
+    return mapping
 
-def load_flag(flag_file, out_map):
-    with open(flag_file) as f:
-        for line in f:
-            if line.startswith("#"):
-                continue
-            line_kv = line.split(":")
-            flag_bit = int(line_kv[0], 16)
-            out_map[flag_bit] = line_kv[1][:-1]
 
-def gen_string_from_flag_map(flag, inmap):
-    flag_backup = flag
-    flag_str = None
-    for k, v in inmap.items():
-        if flag & k == k:
-            if flag_str is None:
-                flag_str = v
-            else:
-                flag_str = flag_str  + " | " + v
-            # clear the bit
-            flag &= ~k
-    if flag == 0:
-        return "%s /* 0x%08x */" %(flag_str, flag_backup)
-    return "%s | 0x%08x /* 0x%08x */" %(flag_str, flag, flag_backup)
+def quoted_replacement(mapping: dict[str, str], source: str) -> str:
+    if not mapping:
+        return source
+    pattern = re.compile(
+        "|".join(re.escape(key) for key in sorted(mapping, key=len, reverse=True))
+    )
+    return pattern.sub(lambda match: mapping[match.group(0)], source)
 
-def gen_string_from_flag_table(flag, inmap):
-    return inmap[flag]
 
-def decimal2hex(number):
-    hex = 0xFFFFFFFF+(-328966) +1 if number < 0 else number
+def format_flags(value: int, mapping: dict[int, str]) -> str:
+    if value == 0 and 0 in mapping:
+        return mapping[0]
 
-def replace_flags(text, pattern, cust_map, mode="map", type="method"):
-    def dashrepl(matchobj):
-        origin_str = matchobj.group(0)
-        flag_str = matchobj.group(1)
-        flag = int(flag_str, 0)
+    remaining = value & 0xFFFFFFFF
+    pieces: list[str] = []
+    candidates = sorted(
+        (
+            bit
+            for bit in mapping
+            if bit != 0
+            and (bit & 0xFFFFFFFF).bit_count() == 1
+            and (remaining & (bit & 0xFFFFFFFF)) == (bit & 0xFFFFFFFF)
+        ),
+        key=lambda bit: bit & 0xFFFFFFFF,
+        reverse=True,
+    )
+    for bit in candidates:
+        if bit == 0:
+            continue
+        unsigned_bit = bit & 0xFFFFFFFF
+        pieces.append(mapping[bit])
+        remaining &= ~unsigned_bit
 
-        if mode == "table":
-            flag_gen = gen_string_from_flag_table(flag, cust_map)
-        elif mode == "map":
-            flag_gen = gen_string_from_flag_map(flag, cust_map)
+    if not pieces:
+        return f"0x{value & 0xFFFFFFFF:08x}"
+    if remaining:
+        pieces.append(f"0x{remaining:08x}")
+    return " | ".join(pieces)
 
-        print("%s --> %s" %(flag, flag_gen))
-        return re.sub(flag_str, flag_gen, origin_str)
 
-    p_pattern = None
-    if type == "method":
-        p_pattern = r"\.%s\((\d+)\)" % pattern
-    elif type == "bitwise":
-        p_pattern = r"%s [&|=]+ (\d+)" % pattern
-    else:
-        return None
+def replace_numeric_argument(
+    source: str, pattern: str, mapping: dict[int, str], *, table: bool = False
+) -> str:
+    expression = re.compile(pattern)
 
-    return re.sub(p_pattern, dashrepl, text)
+    def replace(match: re.Match[str]) -> str:
+        raw_value = match.group("value")
+        try:
+            value = int(raw_value, 0)
+        except ValueError:
+            return match.group(0)
 
-def all(fsrc):
-    with open(fsrc, 'rb+') as fd:
-        s = fd.read()
+        if table:
+            replacement = mapping.get(value)
+            if replacement is None:
+                return match.group(0)
+        else:
+            replacement = format_flags(value, mapping)
+        return match.group(0).replace(raw_value, replacement, 1)
 
-        # replace intent actions
-        for k, v in intent_action_map.items():
-            s = re.sub(k, v, s);
+    return expression.sub(replace, source)
 
-        # replace system services
-        for k, v in context_service_map.items():
-            s = re.sub("getSystemService\(%s\)" %k, "getSystemService(%s)" %v, s);
 
-        # replace view visibility flags
-        s = replace_flags(s, "setVisibility", visibility_flag_map, "table")
+def fix_source(source: str) -> str:
+    intent_actions = load_string_map("intent_action.txt")
+    context_services = load_string_map("context_service.txt")
+    intent_flags = load_flag_map("intent_flag.txt")
+    visibility_flags = load_flag_map("visibility_flag.txt")
+    window_flags = load_flag_map("window_lp_flag.txt")
 
-        # replace intent flags
-        s = replace_flags(s, "intent.setFlags", intent_flag_map, "map")
+    source = quoted_replacement(intent_actions, source)
+    source = quoted_replacement(context_services, source)
+    source = replace_numeric_argument(
+        source,
+        r"\.setVisibility\(\s*(?P<value>[-+]?(?:0[xX][0-9a-fA-F]+|\d+))\s*\)",
+        visibility_flags,
+        table=True,
+    )
+    source = replace_numeric_argument(
+        source,
+        r"\.(?:setFlags|addFlags)\(\s*(?P<value>[-+]?(?:0[xX][0-9a-fA-F]+|\d+))\s*\)",
+        intent_flags,
+    )
+    source = replace_numeric_argument(
+        source,
+        r"\b(?:lp|mWLayoutParams)\.flags\s*(?:=|\|=)\s*(?P<value>[-+]?(?:0[xX][0-9a-fA-F]+|\d+))",
+        window_flags,
+    )
+    return source
 
-        # replace window layoutparams flags
-        s = replace_flags(s, "lp.flags", window_lp_flag_map, "map", "bitwise")
-        s = replace_flags(s, "mWLayoutParams.flags", window_lp_flag_map, "map", "bitwise")
 
-        fd.seek(0, 0)
-        fd.write(s)
+def process_file(path: Path, dry_run: bool) -> bool:
+    original = path.read_text(encoding="utf-8")
+    updated = fix_source(original)
+    if updated == original:
+        return False
+    if not dry_run:
+        path.write_text(updated, encoding="utf-8")
+    return True
 
-def replace_files(file_lists):
-    for i in file_lists:
-        print("--> replace %s" %i)
-        all(i)
 
-def replace(str1, str2, fsrc):
-    with open(fsrc, "rb+") as f:
-        s = f.read()
-        s = re.sub(str1, str2, s)
-        f.seek(0, 0)
-        f.write(s)
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Replace selected Android literals in JADX Java sources."
+    )
+    parser.add_argument("--dry-run", action="store_true", help="report changed files only")
+    parser.add_argument(
+        "files",
+        nargs="+",
+        type=Path,
+        help="Java files or directories; directories are searched recursively",
+    )
+    args = parser.parse_args()
 
-def replace_string(str1, str2, file_lists):
-    for i in file_lists:
-        print("--> replace %s" %i)
-        replace(str1, str2, i)
+    targets: list[Path] = []
+    for item in args.files:
+        if item.is_dir():
+            targets.extend(sorted(item.rglob("*.java")))
+        elif item.is_file():
+            targets.append(item)
+        else:
+            print(f"fixsrc: ignoring missing path: {item}", file=sys.stderr)
 
-def help(name):
-    print("Usage: %s [option] <args...>" %name)
-    print("       %s f_i [intent_action_string]" %name)
-    print("       %s f_lp [number]" %name)
-    print("       %s r_s [str_src] [str_des] [file1, file2, ...]" %name)
-    print("       %s a [file1, file2, ...]" %name)
+    changed = 0
+    for path in targets:
+        if process_file(path, args.dry_run):
+            changed += 1
+            print(path)
+    print(f"fixsrc: {'would update' if args.dry_run else 'updated'} {changed} file(s)")
 
-def getname(name):
-    pos = name.rfind('/')
-    if pos >= 0:
-        return name[pos+1:]
-    else:
-        return name
-
-def main(argv):
-    name = getname(argv[0])
-    if (len(argv) < 3):
-        help(name)
-        return
-
-    init(sys.argv[0])
-    load_string(resource_maps["context_service"], context_service_map)
-    load_string(resource_maps["intent_action"], intent_action_map)
-    load_flag(resource_maps["intent_flag"], intent_flag_map)
-    load_flag(resource_maps["visibility_flag"], visibility_flag_map)
-    load_flag(resource_maps["window_lp_flag"], window_lp_flag_map)
-
-    option = argv[1]
-    if option == "f_i" or option == "intent" :
-        flag = int(argv[2], 0)
-        print(gen_string_from_flag_map(flag, intent_flag_map))
-    elif option == "f_lp":
-        flag = int(argv[2], 0)
-        print(gen_string_from_flag_map(flag, window_lp_flag_map))
-    elif option == "r_s":
-        # print argv
-        replace_string(argv[2], argv[3], argv[4:])
-    elif option == "a":
-        replace_files(argv[2:])
-    else:
-        help(name)
 
 if __name__ == "__main__":
-    main(sys.argv)
+    main()

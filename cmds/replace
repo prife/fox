@@ -1,34 +1,32 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-function get_abs_path() {
-    readlink -f $1 
+set -euo pipefail
+
+usage() {
+    printf 'usage: replace <source-dir> <destination-dir>\n' >&2
+    exit 1
 }
 
-function get_files() {
-    local name=$1
-    local dir=$2
-    find ${dir} -name "${name}.*"
-}
+(($# == 2)) || usage
 
-function main() {
-    local src_dir=$1
-    local des_dir=$(get_abs_path $2)
-    local HERE=$(pwd)
-    cd $src_dir
-    file_list=(`find . -type f`)
-    for i in ${file_list[*]}; do
-        local filename=$(basename ${i%.*})
-        local todir=$(dirname $des_dir/$i)
-        local override_files=$(get_files $filename $todir)
-        echo "$1/$i -> $2/$i"
-        for k in ${override_files[*]}; do
-            echo " $k"
-            rm "$k"
-        done
-        cp $i $des_dir/$i
-    done
-    cd $HERE
-}
+source_dir="$(cd -- "$1" && pwd -P)"
+destination_dir="$2"
+mkdir -p "${destination_dir}"
+destination_dir="$(cd -- "${destination_dir}" && pwd -P)"
 
-main "$@"
+while IFS= read -r -d '' source_file; do
+    relative_path="${source_file#"${source_dir}"/}"
+    destination_file="${destination_dir}/${relative_path}"
+    destination_parent="$(dirname -- "${destination_file}")"
+    base_name="$(basename -- "${source_file%.*}")"
 
+    mkdir -p "${destination_parent}"
+    while IFS= read -r -d '' conflict; do
+        [[ "${conflict}" == "${destination_file}" ]] && continue
+        printf 'remove conflicting file: %s\n' "${conflict}"
+        rm -f -- "${conflict}"
+    done < <(find "${destination_parent}" -maxdepth 1 -type f -name "${base_name}.*" -print0)
+
+    printf '%s -> %s\n' "${source_file}" "${destination_file}"
+    cp -- "${source_file}" "${destination_file}"
+done < <(find "${source_dir}" -type f -print0)
